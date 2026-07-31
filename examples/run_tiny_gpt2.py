@@ -61,10 +61,10 @@ def main():
         model=model,
         max_seq_len=32,
         batch_size=2,
+        end_token_id=tokenizer.eos_token_id,
     )
 
     engine.model_runner.pad_token_id = tokenizer.pad_token_id
-    engine.end_token = tokenizer.eos_token_id
 
     prompts = {
         "hello": "Hello",
