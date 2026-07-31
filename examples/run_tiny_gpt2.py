@@ -3,14 +3,13 @@ from pathlib import Path
 import torch
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
 
-from mini_llm.inference.engine.llm_engine import LLMEngine
-from mini_llm.inference.model.gpt import GPT2
-from mini_llm.inference.model.weight_loader import load_hf_gpt2_weights
+from inference.engine.llm_engine import LLMEngine
+from inference.model.gpt import GPT2
+from inference.model.weight_loader import load_hf_gpt2_weights
 
 
 MODEL_PATH = (
     Path(__file__).resolve().parents[1]
-    / "mini_llm"
     / "inference"
     / "model"
     / "tiny-gpt2"
@@ -61,10 +60,10 @@ def main():
         model=model,
         max_seq_len=32,
         batch_size=2,
+        end_token_id=tokenizer.eos_token_id,
     )
 
     engine.model_runner.pad_token_id = tokenizer.pad_token_id
-    engine.end_token = tokenizer.eos_token_id
 
     prompts = {
         "hello": "Hello",

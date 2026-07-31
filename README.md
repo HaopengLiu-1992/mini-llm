@@ -31,15 +31,14 @@ python3 -m venv .venv
 模型位于：
 
 ```text
-mini_llm/inference/model/tiny-gpt2
+inference/model/tiny-gpt2
 ```
 
 ## 项目结构
 
 ```text
-mini_llm/
-└── inference/
-    ├── layers/    # Transformer 基础层
-    ├── model/     # GPT-2 和权重加载
-    └── engine/    # Engine、Scheduler、Sampler
+inference/
+├── layers/    # Transformer 基础层
+├── model/     # GPT-2 和权重加载
+└── engine/    # Engine、Scheduler、Sampler
 ```

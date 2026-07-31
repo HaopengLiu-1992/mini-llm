@@ -4,12 +4,12 @@ from .scheduler import Scheduler
 from .sequence import Sequence, Status
 
 class LLMEngine:
-    def __init__(self, model, max_seq_len, batch_size):
+    def __init__(self, model, max_seq_len, batch_size, end_token_id):
         self.model_runner = ModelRunner(model)
         self.sampler = Sampler()
         self.scheduler = Scheduler(batch_size)
         self.max_seq_len = max_seq_len
-        self.end_token = 1234
+        self.end_token_id = end_token_id
     
     def add_request(self, request_id, prompt_token_ids):
         seq = Sequence(request_id)
@@ -30,7 +30,7 @@ class LLMEngine:
 
         for seq, token_id in zip(batch, next_token_ids):
             seq.add_token(token_id)
-            if token_id == self.end_token:
+            if token_id == self.end_token_id:
                 seq.status = Status.Completed
             if seq.length >= self.max_seq_len:
                 seq.status = Status.Completed
