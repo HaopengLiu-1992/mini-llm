@@ -59,17 +59,13 @@ def tokenize_example(example):
         example["prompt"],
         add_special_tokens=False,
     )["input_ids"]
-
     response_ids = tokenizer(
         example["response"] + tokenizer.eos_token,
         add_special_tokens=False,
     )["input_ids"]
-
     input_ids = prompt_ids + response_ids
 
     labels = [-100] * len(prompt_ids)+ response_ids
-
-    # truncate
     input_ids = input_ids[:MAX_LENGTH]
     labels = labels[:MAX_LENGTH]
 
