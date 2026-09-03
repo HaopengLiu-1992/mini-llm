@@ -208,3 +208,155 @@ class SFTDataModule(BaseDataModule):
                 dtype=torch.long,
             ),
         }
+
+
+class DPODataModule(BaseDataModule):
+    """Data module for preference pairs with prompt/chosen/rejected fields."""
+
+    def __init__(
+        self,
+        dataset_path,
+        model_name,
+        train_size=2000,
+        eval_size=200,
+        batch_size=4,
+        max_length=256,
+        seed=42,
+    ):
+        super().__init__(batch_size=batch_size, seed=seed)
+
+        self.dataset_path = dataset_path
+        self.model_name = model_name
+        self.train_size = train_size
+        self.eval_size = eval_size
+        self.max_length = max_length
+
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+    def tokenize_pair(self, prompt, chosen, rejected):
+        prompt_ids = self.tokenizer(
+            prompt,
+            add_special_tokens=False,
+        )["input_ids"]
+        chosen_ids = self.tokenizer(
+            chosen + self.tokenizer.eos_token,
+            add_special_tokens=False,
+        )["input_ids"]
+        rejected_ids = self.tokenizer(
+            rejected + self.tokenizer.eos_token,
+            add_special_tokens=False,
+        )["input_ids"]
+
+        # Use the same prompt tokens for both preference candidates. Reserve
+        # enough room for the longer response and truncate the prompt from
+        # the left so its ending remains visible.
+        response_budget = max(len(chosen_ids), len(rejected_ids))
+        prompt_budget = max(0, self.max_length - response_budget)
+        prompt_ids = prompt_ids[-prompt_budget:] if prompt_budget else []
+
+        response_budget = self.max_length - len(prompt_ids)
+        if response_budget <= 0:
+            prompt_ids = []
+            response_budget = self.max_length
+
+        chosen_ids = chosen_ids[:response_budget]
+        rejected_ids = rejected_ids[:response_budget]
+
+        def build_sequence(response_ids):
+            return {
+                "input_ids": prompt_ids + response_ids,
+                "attention_mask": [1] * (len(prompt_ids) + len(response_ids)),
+                "labels": [-100] * len(prompt_ids) + response_ids,
+            }
+
+        return build_sequence(chosen_ids), build_sequence(rejected_ids)
+
+    def tokenize_example(self, example):
+        chosen, rejected = self.tokenize_pair(
+            example["prompt"],
+            example["chosen"],
+            example["rejected"],
+        )
+
+        return {
+            "chosen_input_ids": chosen["input_ids"],
+            "chosen_attention_mask": chosen["attention_mask"],
+            "chosen_labels": chosen["labels"],
+            "rejected_input_ids": rejected["input_ids"],
+            "rejected_attention_mask": rejected["attention_mask"],
+            "rejected_labels": rejected["labels"],
+        }
+
+    def prepare_data(self):
+        dataset = load_dataset(
+            "json",
+            data_files=self.dataset_path,
+            split="train",
+        ).shuffle(seed=self.seed)
+
+        required_columns = {"prompt", "chosen", "rejected"}
+        missing_columns = required_columns - set(dataset.column_names)
+        if missing_columns:
+            raise ValueError(
+                f"DPO dataset is missing columns: {sorted(missing_columns)}"
+            )
+
+        total_size = len(dataset)
+        if total_size < 2:
+            raise ValueError("DPO dataset must contain at least two examples")
+
+        eval_size = min(self.eval_size, total_size - 1)
+        train_size = min(self.train_size, total_size - eval_size)
+
+        raw_train = dataset.select(range(train_size))
+        raw_eval = dataset.select(
+            range(train_size, train_size + eval_size)
+        )
+
+        columns = dataset.column_names
+        self.train_dataset = raw_train.map(
+            self.tokenize_example,
+            remove_columns=columns,
+            load_from_cache_file=False,
+        )
+        self.eval_dataset = raw_eval.map(
+            self.tokenize_example,
+            remove_columns=columns,
+            load_from_cache_file=False,
+        )
+
+    def collate_side(self, batch, prefix):
+        input_key = f"{prefix}_input_ids"
+        attention_key = f"{prefix}_attention_mask"
+        labels_key = f"{prefix}_labels"
+
+        max_len = max(len(example[input_key]) for example in batch)
+        input_ids = []
+        attention_masks = []
+        labels = []
+
+        for example in batch:
+            pad_len = max_len - len(example[input_key])
+            input_ids.append(
+                example[input_key]
+                + [self.tokenizer.pad_token_id] * pad_len
+            )
+            attention_masks.append(
+                example[attention_key] + [0] * pad_len
+            )
+            labels.append(
+                example[labels_key] + [-100] * pad_len
+            )
+
+        return {
+            input_key: torch.tensor(input_ids, dtype=torch.long),
+            attention_key: torch.tensor(attention_masks, dtype=torch.long),
+            labels_key: torch.tensor(labels, dtype=torch.long),
+        }
+
+    def collate_fn(self, batch):
+        result = self.collate_side(batch, "chosen")
+        result.update(self.collate_side(batch, "rejected"))
+        return result
