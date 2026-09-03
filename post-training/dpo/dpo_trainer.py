@@ -1,8 +1,13 @@
 from pathlib import Path
+import sys
 
 import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM
+
+# Allow the script to import shared training modules when run directly:
+# `python post-training/dpo/dpo_trainer.py`.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from trainer import BaseTrainer
 from datamodule import DPODataModule
