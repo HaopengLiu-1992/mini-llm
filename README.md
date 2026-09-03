@@ -2,7 +2,7 @@
 
 [简体中文](README_zh-CN.md)
 
-A minimal LLM implementation for learning the GPT-2 workflow, from model inference to supervised fine-tuning (SFT).
+A minimal LLM implementation for learning the GPT-2 workflow, from model inference to supervised fine-tuning (SFT) and direct preference optimization (DPO).
 
 ## Features
 
@@ -14,6 +14,7 @@ A minimal LLM implementation for learning the GPT-2 workflow, from model inferen
 - Continuous Batching
 - Alpaca dataset preprocessing
 - A PyTorch-based supervised fine-tuning trainer
+- DPO preference-data generation and training
 
 ## Installation
 
@@ -43,10 +44,29 @@ inference/model/tiny-gpt2
 The following command loads the Alpaca dataset and performs supervised fine-tuning with `distilbert/distilgpt2`.
 
 ```bash
-PYTHONPATH=post-training .venv/bin/python post-training/sft/sft-trainer.py
+PYTHONPATH=post-training .venv/bin/python post-training/sft/sft_trainer.py
 ```
 
 Training checkpoints are saved to `checkpoints/` by default.
+
+## Run DPO Training
+
+First, generate preference data. The recommended starting point is the SFT checkpoint:
+
+```bash
+.venv/bin/python post-training/dpo/generate_alpaca_dpo.py \
+  --model checkpoints/distilgpt2-sft-step20 \
+  --size 2000 \
+  --output data/alpaca-dpo/train.jsonl
+```
+
+The generated JSONL file contains `prompt`, `chosen`, and `rejected` fields. Then run DPO training:
+
+```bash
+.venv/bin/python post-training/dpo/dpo_trainer.py
+```
+
+The DPO script trains for one epoch by default, using 1,800 training examples and 200 evaluation examples. The final checkpoint is saved to `checkpoints/distilgpt2-dpo-epoch1/`.
 
 ## Project Structure
 
@@ -58,5 +78,6 @@ inference/
 post-training/
 ├── datamodule.py       # Dataset loading, formatting, and batching
 ├── trainer.py          # Generic trainer
-└── sft/                # SFT data processing and training entry point
+├── sft/                # SFT data processing and training entry point
+└── dpo/                # DPO data generation and training entry point
 ```
