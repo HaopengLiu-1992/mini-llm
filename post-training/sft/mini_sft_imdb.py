@@ -16,6 +16,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 
 ds = load_dataset(dataset_name, split = 'train')
+ds = ds.shuffle(seed=42)
 print(ds[0])
 
 raw_training = ds.select(range(1000))
