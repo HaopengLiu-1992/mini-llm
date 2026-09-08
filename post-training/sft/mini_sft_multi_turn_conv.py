@@ -35,10 +35,6 @@ def show_generation():
     print(f"generated {len(gen)} tokens, last token: {tokenizer.convert_ids_to_tokens([gen[-1].item()])}")
     print(tokenizer.decode(gen, skip_special_tokens=True))
 
-
-
-
-
 class SftDataset(TorchDataset):
     def __init__(self, ds, tokenizer, max_len=1024):
         self.tokenizer = tokenizer
@@ -73,10 +69,6 @@ def collate_fn(batch):
     labels = pad_sequence(labels, batch_first=True, padding_value=-100)
 
     return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
-
-
-
-
 
 data = load_from_disk("data/ultrachat_10k")
 training_ds = SftDataset(data["train"], tokenizer, max_len)
