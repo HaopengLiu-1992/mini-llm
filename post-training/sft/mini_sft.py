@@ -58,8 +58,8 @@ def collate_fn(batch):
     labels = pad_sequence(labels, batch_first=True, padding_value=-100)
     return { "input_ids": input_ids, "attention_mask": attention_mask, "labels": labels }
 
-training_dl= DataLoader(training_dataset, batch_size=4, shuffle=True, collate_fn = collate_fn)
-eval_dl= DataLoader(eval_dataset, batch_size=4, shuffle=False, collate_fn = collate_fn)
+training_dl= DataLoader(training_dataset, batch_size=8, shuffle=True, collate_fn = collate_fn)
+eval_dl= DataLoader(eval_dataset, batch_size=8, shuffle=False, collate_fn = collate_fn)
 
 model = AutoModelForCausalLM.from_pretrained("distilbert/distilgpt2").to("mps")
 optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-5)
@@ -91,6 +91,6 @@ def eval():
     avg_loss = total_loss / len(eval_dl)
     print(f"eval loss = {avg_loss:.4f}")
 
-for _ in range(3):
-    training()
-    eval()
+
+training()
+eval()
