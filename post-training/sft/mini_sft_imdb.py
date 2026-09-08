@@ -15,12 +15,9 @@ model.to(device)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 
-ds = load_dataset(dataset_name, split = 'train')
-ds = ds.shuffle(seed=42)
-print(ds[0])
-
-raw_training = ds.select(range(1000))
-raw_eval = ds.select(range(1000, 1100))
+ds = load_dataset(dataset_name)
+raw_training = (ds["train"].shuffle(seed=42).select(range(1000)))
+raw_eval = (ds["test"].shuffle(seed=42).select(range(500)))
 
 class SftDataset(Dataset):
     def __init__(self, ds, tokenizer, max_len = 512):
