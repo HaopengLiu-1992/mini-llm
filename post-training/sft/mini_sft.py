@@ -5,6 +5,20 @@ from transformers import AutoTokenizer
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModelForCausalLM
 
+import time
+
+device = torch.device(
+    "cuda" if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available()
+    else "cpu"
+)
+
+def synchronize(device):
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elif device.type == "mps":
+        torch.mps.synchronize()
+
 class SftDataset(Dataset):
     def __init__(self, ds, tokenizer, max_len = 512):
         self.ds = ds
@@ -61,29 +75,53 @@ def collate_fn(batch):
 training_dl= DataLoader(training_dataset, batch_size=8, shuffle=True, collate_fn = collate_fn)
 eval_dl= DataLoader(eval_dataset, batch_size=8, shuffle=False, collate_fn = collate_fn)
 
-model = AutoModelForCausalLM.from_pretrained("distilbert/distilgpt2").to("mps")
+model = AutoModelForCausalLM.from_pretrained("distilbert/distilgpt2").to(device)
 optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-5)
 
 def training():
+    model.to(device)
     model.train()
     total_loss = 0
-    for batch in training_dl:
-        batch = { k: v.to('mps') for k, v in batch.items() }
+    batch_times = []
+
+    for step, batch in enumerate(training_dl):
+        if step >= 2:  # skip the first two warm-up batches
+            synchronize(device)
+            start_time = time.perf_counter()
+
+        batch = {
+            k: v.to(device)
+            for k, v in batch.items()
+        }
+
         optimizer.zero_grad(set_to_none=True)
         output = model(**batch)
         loss = output.loss
         loss.backward()
         optimizer.step()
+
+        if step >= 2:
+            synchronize(device)
+            batch_times.append(time.perf_counter() - start_time)
+
         total_loss += loss.item()
+
+        if step == 3:
+            break
+
     avg_loss = total_loss / len(training_dl)
-    print(f"training loss = {avg_loss:.4f}")
+    avg_batch_time = sum(batch_times) / len(batch_times)
+
+    print(f"Device: {device}")
+    print(f"Training loss: {avg_loss:.4f}")
+    print(f"Average batch time: {avg_batch_time:.4f} seconds")
 
 def eval():
     model.eval()
     total_loss = 0
     with torch.no_grad():
         for batch in eval_dl:
-            batch = { k: v.to('mps') for k, v in batch.items() }
+            batch = { k: v.to(device) for k, v in batch.items() }
             output = model(**batch)
             loss = output.loss
             print(f"loss = {loss.item():.4f}")
