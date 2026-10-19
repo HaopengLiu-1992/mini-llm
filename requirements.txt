@@ -1,4 +1,5 @@
 torch==2.13.0
 transformers==5.14.1
 datasets
+peft
 pytest==9.1.1
