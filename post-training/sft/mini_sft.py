@@ -1,134 +1,167 @@
 import torch
 from datasets import load_dataset
-from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer
+from torch.utils.data import DataLoader
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from torch.nn.utils.rnn import pad_sequence
-from transformers import AutoModelForCausalLM
+from torch.optim import AdamW
+from peft import LoraConfig, get_peft_model
 
-import time
 
-device = torch.device(
-    "cuda" if torch.cuda.is_available()
-    else "mps" if torch.backends.mps.is_available()
-    else "cpu"
+model_name = "Qwen/Qwen3-1.7B-Base"
+
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.bfloat16,
 )
 
-def synchronize(device):
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
-    elif device.type == "mps":
-        torch.mps.synchronize()
+model.config.use_cache = False
+model.gradient_checkpointing_enable()
+model.enable_input_require_grads()
 
-class SftDataset(Dataset):
-    def __init__(self, ds, tokenizer, max_len = 512):
-        self.ds = ds
-        self.tokenizer = tokenizer
-        self.max_len = max_len
-        self.eos_token_id = self.tokenizer.eos_token_id
-        self.processed_ds = self.ds.map(self.process_example, remove_columns=self.ds.column_names)
-    
-    def process_example(self, example):
-        instruction = example['instruction']
-        response = example["output"]
-        prompt = (
-            f"### Instruction:\n"
-            f"{instruction}\n\n"
-            f"### Response:\n"
-        )
-        prompt_ids = self.tokenizer(prompt,add_special_tokens=False)["input_ids"]
-        resp_ids = self.tokenizer(response,add_special_tokens=False)["input_ids"]
-        resp_ids.append(self.eos_token_id)
-        
-        labels = [-100] * len(prompt_ids) + resp_ids
-        input_ids = prompt_ids + resp_ids
+lora_config = LoraConfig(
+    r=16,
+    lora_alpha=32,
+    lora_dropout=0.05,
+    target_modules="all-linear",
+    bias="none",
+    task_type="CAUSAL_LM",
+)
 
-        labels = labels[:self.max_len]
-        input_ids = input_ids[:self.max_len]
-        return { "input_ids": input_ids, "labels": labels }
-    
-    def __len__(self):
-        return len(self.processed_ds)
-    
-    def __getitem__(self, idx):
-        example = self.processed_ds[idx]
-        input_ids_tensor = torch.tensor(example['input_ids'], dtype = torch.long)
-        labels_tensor = torch.tensor(example['labels'], dtype = torch.long)
-        return { "input_ids": input_ids_tensor, 'labels': labels_tensor }
+model = get_peft_model(model, lora_config)
+model.print_trainable_parameters()
 
-ds = load_dataset("yahma/alpaca-cleaned", split="train")
-tokenizer = AutoTokenizer.from_pretrained("distilbert/distilgpt2")
-tokenizer.pad_token = tokenizer.eos_token
-training_dataset = SftDataset(ds.select(range(1000)), tokenizer)
-eval_dataset = SftDataset(ds.select(range(1000, 1200)), tokenizer)
+device = "cuda"
+model.to(device)
 
-# padding and attention mask
+dataset_name = "yahma/alpaca-cleaned"
+ds = load_dataset(dataset_name, split="train")
+ds_train = ds.select(range(10000))
+ds_eval = ds.select(range(10000, 10100))
+
+def build_prompt(instruction, input_text=""):
+    if input_text:
+        user_text = (f"{instruction}\n\nInput:\n{input_text}")
+    else:
+        user_text = instruction
+
+    return [{"role": "user", "content": user_text}]
+
+def tokenize_item(item, max_len = 1024):
+    prompt_messages = build_prompt(item["instruction"], item["input"])
+
+    full_messages = prompt_messages + [{"role": "assistant", "content": item["output"]}]
+
+    prompt_ids = tokenizer.apply_chat_template(
+        prompt_messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_dict = False
+    )
+
+    input_ids = tokenizer.apply_chat_template(
+        full_messages,
+        tokenize=True,
+        add_generation_prompt=False,
+        return_dict = False
+    )
+
+    labels = [-100] * len(prompt_ids) + input_ids[len(prompt_ids):]
+    if len(input_ids) > max_len:
+        input_ids = input_ids[:max_len]
+        labels = labels[:max_len]
+    return { "input_ids": input_ids, "labels": labels }
+
+td = ds_train.map(tokenize_item, remove_columns = ds_train.column_names)
+ed = ds_eval.map(tokenize_item, remove_columns = ds_eval.column_names)
+
 def collate_fn(batch):
-    input_ids = [x["input_ids"] for x in batch]
-    attention_mask = [torch.ones(len(x["input_ids"]), dtype=torch.long) for x in batch]
-    labels = [x["labels"] for x in batch]
+    result = tokenizer.pad(
+        [{"input_ids": x["input_ids"]} for x in batch],
+        padding=True,
+        return_tensors="pt",
+    )
 
-    input_ids = pad_sequence(input_ids, batch_first=True, padding_value=tokenizer.pad_token_id)
-    attention_mask = pad_sequence(attention_mask, batch_first=True, padding_value=0)
-    labels = pad_sequence(labels, batch_first=True, padding_value=-100)
-    return { "input_ids": input_ids, "attention_mask": attention_mask, "labels": labels }
+    result["labels"] = pad_sequence(
+        [torch.tensor(x["labels"]) for x in batch],
+        batch_first=True,
+        padding_value=-100,
+    )
 
-training_dl= DataLoader(training_dataset, batch_size=8, shuffle=True, collate_fn = collate_fn)
-eval_dl= DataLoader(eval_dataset, batch_size=8, shuffle=False, collate_fn = collate_fn)
+    return result
 
-model = AutoModelForCausalLM.from_pretrained("distilbert/distilgpt2").to(device)
-optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-5)
+tl = DataLoader(td, batch_size=1, shuffle=True, collate_fn=collate_fn)
+el = DataLoader(ed, batch_size=1, shuffle=False, collate_fn=collate_fn)
 
-def training():
-    model.to(device)
-    model.train()
-    total_loss = 0
-    batch_times = []
 
-    for step, batch in enumerate(training_dl):
-        if step >= 2:  # skip the first two warm-up batches
-            synchronize(device)
-            start_time = time.perf_counter()
-
-        batch = {
-            k: v.to(device)
-            for k, v in batch.items()
-        }
-
-        optimizer.zero_grad(set_to_none=True)
-        output = model(**batch)
-        loss = output.loss
-        loss.backward()
-        optimizer.step()
-
-        if step >= 2:
-            synchronize(device)
-            batch_times.append(time.perf_counter() - start_time)
-
-        total_loss += loss.item()
-
-        if step == 3:
-            break
-
-    avg_loss = total_loss / len(training_dl)
-    avg_batch_time = sum(batch_times) / len(batch_times)
-
-    print(f"Device: {device}")
-    print(f"Training loss: {avg_loss:.4f}")
-    print(f"Average batch time: {avg_batch_time:.4f} seconds")
-
-def eval():
+def generate(instruction, input_text="", max_new_tokens=80):
     model.eval()
-    total_loss = 0
+
+    messages = build_prompt(instruction, input_text)
+
+    ids = tokenizer.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_tensors="pt",
+        return_dict=True,
+    ).to(device)
+
     with torch.no_grad():
-        for batch in eval_dl:
+        out = model.generate(
+            **ids,
+            max_new_tokens=max_new_tokens,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+        )
+
+    gen = out[0][ids["input_ids"].shape[1]:]
+    text = tokenizer.decode(gen, skip_special_tokens=True)
+    print(text)
+
+optimizer = AdamW(
+    (p for p in model.parameters() if p.requires_grad),
+    lr=1e-4,
+)
+
+gradient_accumulation_steps = 8
+
+def training(epoches = 1):
+    model.train()
+    for epoch in range(epoches):
+        optimizer.zero_grad()
+        for step, batch in enumerate(tl):
             batch = { k: v.to(device) for k, v in batch.items() }
             output = model(**batch)
-            loss = output.loss
-            print(f"loss = {loss.item():.4f}")
-            total_loss += loss.item()
-    avg_loss = total_loss / len(eval_dl)
-    print(f"eval loss = {avg_loss:.4f}")
+            loss = output.loss / gradient_accumulation_steps
+            loss.backward()
 
+            is_last_step = step == len(tl) - 1
+            if (step + 1) % gradient_accumulation_steps == 0 or is_last_step:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                optimizer.zero_grad()
 
+            if step % 100 == 0:
+                print(f"training loss = {loss.item() * gradient_accumulation_steps:.4f}")
+
+def evaluation():
+    model.eval()
+    total_loss = 0.0
+    with torch.no_grad():
+        for step, batch in enumerate(el):
+             batch = { k: v.to(device) for k, v in batch.items() }
+             output = model(**batch)
+             loss = output.loss
+             total_loss += loss.item()
+        print(f"eval loss = {total_loss / len(el):.4f}")
+
+evaluation()
+generate("The capital of France?")
 training()
-eval()
+evaluation()
+generate("The capital of France?")
+
+model.save_pretrained("checkpoints/qwen3-1.7b-base-lora")
+tokenizer.save_pretrained("checkpoints/qwen3-1.7b-base-lora")
